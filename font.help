@@ -1,0 +1,11 @@
+rm -rf ~/.local/share/fonts/FiraCode*
+fc-cache -fv
+
+-------
+cd ~/Downloads
+wget https://github.com/ryanoasis/nerd-fonts/releases/latest/download/FiraCode.zip
+unzip FiraCode.zip -d ~/.local/share/fonts
+fc-cache -fv
+
+
+FiraCode Nerd Font Mono 
