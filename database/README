@@ -1,0 +1,208 @@
+# MySQL Backup & Restore Scripts
+
+## Overview
+
+* Two shell scripts to **backup** (full: all databases) and **restore** MySQL/MariaDB.
+* Backups include **schema + data + triggers + routines + events**.
+* Output is compressed **`.sql.gz`** with a timestamped filename.
+* Safe defaults for InnoDB: `--single-transaction`, `--quick`.
+* Log file + automatic retention to prune old backups.
+
+---
+
+## Requirements
+
+* Linux/macOS shell environment
+* Tools installed: `mysqldump`, `mysql`, `gzip`
+* MySQL user with sufficient privileges
+
+---
+
+## Installation
+
+* Copy scripts to an executable location and set permissions:
+
+```bash
+sudo cp backup_mysql.sh /usr/local/bin/
+sudo cp restore_mysql.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/backup_mysql.sh /usr/local/bin/restore_mysql.sh
+```
+
+* Create default backup directory and secure it:
+
+```bash
+sudo mkdir -p /var/backups/mysql
+sudo chown "$(whoami)":"$(whoami)" /var/backups/mysql
+chmod 700 /var/backups/mysql
+```
+
+---
+
+## Configuration
+
+### MySQL Client Config (`~/.my.cnf`)
+
+Store credentials safely (avoid CLI passwords). File must be **0600**:
+
+```ini
+[client]
+user = backup_user
+password = STRONG_PASSWORD
+host = 127.0.0.1
+port = 3306
+# optional:
+# default-character-set = utf8mb4
+# socket = /var/run/mysqld/mysqld.sock
+# ssl-mode = REQUIRED
+# ssl-ca = /path/to/ca.pem
+# ssl-cert = /path/to/client-cert.pem
+# ssl-key  = /path/to/client-key.pem
+```
+
+Recommended grants for a dedicated backup user:
+
+```sql
+CREATE USER 'backup_user'@'%' IDENTIFIED BY 'STRONG_PASSWORD';
+GRANT SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES ON *.* TO 'backup_user'@'%';
+FLUSH PRIVILEGES;
+```
+
+### Environment Variables
+
+Set via shell or an external env file; variables have sane defaults:
+
+* `BACKUP_DIR` – backup folder (default: `/var/backups/mysql`)
+* `MYSQL_CNF` – path to client config (default: `~/.my.cnf`)
+* `BACKUP_BASENAME` (backup) – filename prefix (default: `all-databases`)
+* `RETENTION_DAYS` (backup) – keep N days (default: `7`)
+* `LOG_FILE` (backup) – log path (default: `$BACKUP_DIR/backup.log`)
+
+> Tip: keep a dedicated env file, e.g. `/etc/mysql-backup.env`, and source it in cron/systemd.
+
+Example env file:
+
+```env
+BACKUP_DIR=/var/backups/mysql
+BACKUP_BASENAME=prod-full
+RETENTION_DAYS=7
+MYSQL_CNF=/home/ubuntu/.my.cnf
+LOG_FILE=/var/backups/mysql/backup.log
+```
+
+---
+
+## Usage
+
+### Backup (manual)
+
+```bash
+BACKUP_DIR=/var/backups/mysql BACKUP_BASENAME=prod-full /usr/local/bin/backup_mysql.sh
+```
+
+* Example output: `/var/backups/mysql/prod-full-20250920-042000.sql.gz`
+* Log file: `/var/backups/mysql/backup.log`
+
+### Restore (manual)
+
+* Restore the **latest** backup found in `BACKUP_DIR` (pattern: `all-*.sql.gz` by default):
+
+```bash
+/usr/local/bin/restore_mysql.sh
+```
+
+* Restore a **specific** backup file:
+
+```bash
+/usr/local/bin/restore_mysql.sh /var/backups/mysql/prod-full-20250920-042000.sql.gz
+```
+
+> **Note:** Backup script supports `BACKUP_BASENAME`. If you also want the restore script to search by a custom basename, update it to accept `BACKUP_BASENAME` and match `${BACKUP_BASENAME}-*.sql.gz` (recommended for symmetry).
+
+---
+
+## Scheduling
+
+### Cron (daily at 04:20)
+
+```cron
+20 4 * * * BACKUP_DIR=/var/backups/mysql BACKUP_BASENAME=prod-full /usr/local/bin/backup_mysql.sh >> /var/log/mysql-backup-cron.log 2>&1
+```
+
+* Redirects logs to `/var/log/mysql-backup-cron.log`.
+* To load a central env file:
+
+```cron
+20 4 * * * . /etc/mysql-backup.env; /usr/local/bin/backup_mysql.sh >> /var/log/mysql-backup-cron.log 2>&1
+```
+
+### systemd Timer (daily at 04:20)
+
+**Service** – `/etc/systemd/system/mysql-backup.service`
+
+```ini
+[Unit]
+Description=MySQL full backup
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/mysql-backup.env
+ExecStart=/usr/local/bin/backup_mysql.sh
+```
+
+**Timer** – `/etc/systemd/system/mysql-backup.timer`
+
+```ini
+[Unit]
+Description=Run MySQL backup daily at 04:20
+
+[Timer]
+OnCalendar=*-*-* 04:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable & verify:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mysql-backup.timer
+systemctl list-timers | grep mysql-backup
+```
+
+---
+
+## What the Flags Do (Backup)
+
+* `--single-transaction` – consistent snapshot (non-blocking for InnoDB).
+* `--quick` – stream rows to reduce memory.
+* `--routines --triggers --events` – include all DB objects.
+* `--hex-blob` – safe dump of binary columns.
+* `--set-gtid-purged=OFF` – avoids GTID issues when not needed.
+* `--skip-lock-tables` – reduces table locking (MyISAM not fully safe).
+
+---
+
+## Best Practices
+
+* Regularly **test restores** on staging.
+* Ship backups off-host (rsync/scp/S3) and consider encryption (e.g., `gpg`).
+* Protect directories and config files (`chmod 700` for backup dir; `chmod 600` for `~/.my.cnf`).
+* Monitor logs (`backup.log`, cron/systemd journals).
+
+---
+
+## Troubleshooting
+
+* `Access denied` → check `~/.my.cnf` credentials and SQL grants.
+* `No backup files found` → verify `BACKUP_DIR` and filename pattern.
+* `gzip test failed` → disk space, DB connectivity, or interrupted dump.
+* Lock/contention → prefer InnoDB; MyISAM may still see inconsistencies without locks.
+
+---
+
+## Consistency Note & Minor Improvement
+
+* **Minor inconsistency:** Backup supports `BACKUP_BASENAME`, restore currently looks for `all-*.sql.gz`.
+* **Recommended fix:** Add `BACKUP_BASENAME` support to restore so it selects the newest `${BACKUP_BASENAME}-*.sql.gz` when no explicit file is provided. This keeps naming symmetric and simplifies automation.
