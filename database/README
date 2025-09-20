@@ -1,0 +1,69 @@
+MySQL Backup/Restore (Docker)
+=================================
+
+Overview
+- Backup and restore MySQL databases running in a Docker container.
+- All configuration comes from a single env file.
+- Default env file path: `/root/env/mysql_backup/.env` (overridable via `--env-file` or `ENV_FILE`).
+
+Scripts
+- Backup: `database/backup/mysql_docker.sh`
+- Restore: `database/restore/mysql_restore.sh`
+
+Required Env File
+Place at `/root/env/mysql_backup/.env` by default (or provide a custom path):
+
+```
+# Docker container
+DOCKER_CONTAINER=mysql
+
+# MySQL auth (inside the container)
+MYSQL_USER=root
+MYSQL_PASSWORD=strongpassword
+
+# Optional: single DB to dump; omit or set to * for all DBs
+# MYSQL_DATABASE=mydb
+
+# Backup destination (on host)
+BACKUP_DIR=/var/backups/mysql
+RETENTION_DAYS=7
+BACKUP_BASENAME=all-databases
+
+# Optional: custom log file path (defaults to "$BACKUP_DIR/backup.log")
+# LOG_FILE=/var/log/mysql_backup/backup.log
+```
+
+Usage
+- Backup all databases:
+  - `bash database/backup/mysql_docker.sh`
+- Backup with custom env file:
+  - `bash database/backup/mysql_docker.sh --env-file /path/to/.env`
+- Restore latest backup:
+  - `bash database/restore/mysql_restore.sh`
+- Restore a specific file:
+  - `bash database/restore/mysql_restore.sh /var/backups/mysql/all-databases-20250101-000000.sql.gz`
+- Restore using a custom env file:
+  - `bash database/restore/mysql_restore.sh --env-file /path/to/.env`
+
+Inspect backup contents (no restore)
+- Show databases in newest backup:
+  - `bash database/restore/mysql_restore.sh --showdb`
+- Show databases in a specific file:
+  - `bash database/restore/mysql_restore.sh --file /path/to/backup.sql.gz --showdb`
+
+What gets logged
+- Log file path: `$BACKUP_DIR/backup.log` (or `LOG_FILE` if set)
+- Backup start/finish, success/failure, and the output file path
+- Retention deletions are prefixed with `[DELETE] ...`
+- Restore start and outcome (OK/FAILED)
+
+Notes
+- The scripts use `docker exec` to run `mysqldump`/`mysql` inside the container.
+- For security, the password is passed via `MYSQL_PWD` env to avoid command-line exposure in process args.
+- Ensure the MySQL client tools (`mysqldump`, `mysql`) exist in the container (the official `mysql` image includes them).
+
+Cron example
+```
+# Daily at 02:15
+15 2 * * * /bin/bash /path/to/repo/database/backup/mysql_docker.sh >> /var/log/mysql_backup_cron.log 2>&1
+```
